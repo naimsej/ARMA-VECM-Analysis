@@ -1,0 +1,155 @@
+---
+title: "ARMA/VECM Analysis"
+author: "Naim Sejtanic"
+output:
+  html_document: default
+  pdf_document:
+    latex_engine: xelatex
+  word_document: default
+---
+
+```{r setup, echo=TRUE, message=FALSE, warning=FALSE}
+library(plyr)
+library(magrittr)
+library(dplyr)
+library(urca)
+library(doBy)
+library(zoo)
+library(rvest)
+library(rmarkdown)
+library(tinytex)
+library(forecast)
+library(vars)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## ARMA/VECM Analysis
+
+We will create an Ex Post Forecast of Equity Returns using an ARMA model and a VAR model, then compare the results. The data used is up until 2017 and is in the pv.csv file.
+
+First, we estimate an AR(1) model of equity returns, $re_t$, with the sample period ending December 2015, and generate ex post forecasts from January to September 2016.
+
+Create the equity returns and dividend.
+```{r}
+d0 <- read.csv("pv.csv")
+equityreturn =  100 * diff(log(d0$P))
+dividend = 100 * diff(log(d0$Real.Dividend))
+d1 <- d0[2:length(d0$P),] %>%
+  mutate(re = equityreturn, rd = dividend)
+```
+
+AR(1) model with the sample period ending December 2015, we get the estimated model $re_t = 0.3528 + 0.2839 re_{t-1}$
+
+```{r}
+d2.train <- subset(d1, d1$Date <= 2015.12)
+ar1 = arima(d2.train$re, order = c(1,0,0))
+summary(ar1)
+```
+Generate ex post forecasts from January to September 2016.
+```{r}
+ar1_expost = predict(ar1, n.ahead = 9)
+autoplot(forecast(ar1))
+ar1_expost
+```
+
+
+Next, we estimate a VAR(1) model of equity returns, $re_t$, and dividend returns, $rd_t$, with the sample period ending December 2015, and generate ex post forecasts from January to September 2016. 
+Combine the training data
+```{r}
+vardata <- cbind(d2.train$re, d2.train$rd)
+colnames(vardata) <- c("re", "rd")
+```
+
+VAR(1) model of equity returns and dividend returns. 
+```{r}
+var1 = vars::VAR(vardata, p = 1)
+summary(var1)
+```
+We get the estimated VAR model $$re_t = 0.2379+ 0.2865 re_{t-1} +0.1045 rd_{t-1}$$,  $$rd_t = 0.0628 - 0.0077 re_{t-1} +0.5358 rd_{t-1}$$
+
+
+Ex post forecasts from January to September 2016 using VAR(1) model.
+```{R}
+var1_expost <- predict(var1, n.ahead = 9)
+var1_expost 
+```
+
+
+Now, we will compute the MSE and the RMSE for each in order to determine Which is the better forecasting model.
+MSE and RMSE of the AR(1) model for equity returns. 
+```{r}
+d3.test <- subset(d1, d1$Date > 2015.12 & d1$Date <2016.10)
+ar1_mse = mean((ar1_expost$pred - d3.test$re)^2)
+ar1_mse
+ar1_rmse =sqrt(ar1_mse)
+ar1_rmse
+```
+
+MSE and RMSE of the VAR(1) model for equity returns. 
+```{r}
+var1_mse = mean((var1_expost$fcst$re-d3.test$re)^2)
+var1_mse
+var1_rmse = sqrt(var1_mse)
+var1_rmse
+
+```
+
+Because the AR(1) model has smaller MSE, it is more accurate than VAR(1) model.
+
+
+
+
+Next, we can estimate an AR(1) model of dividend returns $rd_t = \rho_0+\rho_1 rd_{t-1}+v_t$ and combine this model with the estimated model in the first equation to generate forecasts of equity returns from October to December 2016.
+```{r}
+d4 <- subset(d1, d1$Date <= 2016.09)
+model = lm(re ~ rd, data = d4)
+summary(model)
+```
+$\hat{re_t} = 0.3779 - 0.1912 \hat {rd_t} = 0.3779 - 0.1912 (\hat{\rho_0}+ \hat{\rho_1} rd_{t-1})$
+
+
+AR(1)model $rd_t = \rho_0+\rho_1 rd_{t-1}+v_t$ using the time before Oct 2016 to predict Oct2016 to Dec2016.
+
+```{r}
+rd.fit =  arima(d4$rd, order = c(1,0,0))
+summary(rd.fit)
+rd_expost = predict(rd.fit, n.ahead = 3)
+rd_expost
+```
+
+$\hat{re_t} = 0.3779 - 0.1912 \hat {rd_t}$, where $\hat{rd_t} = 0.1242 + 0.5383{rd_{t-1}}$.
+Plug the predicted dividend returns into the model, we get the forecast of equity returns from October to December 2016. 
+
+```{r}
+d4.test = subset(d1, d1$Date <= 2016.12 & d1$Date >=2016.10)
+rdpred = c(rd_expost$pred[[1]], rd_expost$pred[[2]], rd_expost$pred[[3]])
+d4.test = d4.test[1:length(d4.test$P),] %>%
+  mutate(rdpred = rdpred)
+re_forecast = c(summary(model)$coefficients[1,'Estimate'] +
+                  summary(model)$coefficients[2, 'Estimate']*d4.test$rdpred )
+re_forecast
+```
+
+Now, we will estimate an AR(2) model of dividend returns $rd_t = \rho_0+\rho_1 rd_{t-1}+\rho_2 rd_{t-2} +v_t,$ and combine this model in place of the AR(1) model just above to generate forecasts of equity returns from October to December 2016. 
+
+Estimate AR(2) model and use it to forecast dividend returns from October to December 2016. 
+```{r}
+rd.fit2 =  arima(d4$rd, order = c(2,0,0))
+summary(rd.fit2)
+rd_expost2 = predict(rd.fit2, n.ahead = 3)
+rd_expost2
+```
+The estimated AR(2)model is $\hat{rd_t} = 0.122+ 0.4463 \hat{rd_{t-1}}+ 0.1710 \hat{rd_{t-2}}$.
+
+Plugging the predicted dividend returns into the model, we get the forecast of equity returns from October to December 2016. 
+```{r}
+d4.test2 = subset(d1, d1$Date <= 2016.12 & d1$Date >=2016.10)
+rdpred2 = c(rd_expost2$pred[[1]], rd_expost2$pred[[2]], rd_expost2$pred[[3]])
+d4.test2 = d4.test2[1:length(d4.test2$P),] %>%
+  mutate(rdpred2 = rdpred2)
+re_forecast2 = c(summary(model)$coefficients[1,'Estimate'] +
+                 summary(model)$coefficients[2, 'Estimate']*d4.test2$rdpred2 )
+re_forecast2
+```
